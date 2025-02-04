@@ -1,0 +1,4 @@
+torch
+torchvision
+kagglehub
+satlaspretrain_models
