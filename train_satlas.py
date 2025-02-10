@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from PIL import Image
+import pandas as pd
 import os
 
 import satlaspretrain_models
@@ -49,11 +50,12 @@ class WildfireDataset(torch.utils.data.Dataset):
         return self.data[idx]
 
 path = kagglehub.dataset_download("abdelghaniaaba/wildfire-prediction-dataset")
+# path = "./wildfire_data/" # If you have already downloaded the dataset
 
 val_dir = os.path.join(path, "valid")
 dataset = WildfireDataset(val_dir, "val")
 
-with open('indices.json') as f:
+with open('indices.json') as f: # Check that the CWD is the cloned repository folder
     indices = json.load(f)
 
 train_indices = indices['train']
@@ -87,7 +89,7 @@ def load_model(
     
 
     weights_manager = satlaspretrain_models.Weights()
-    model = weights_manager.get_pretrained_model(model_identifier=model_identifier, fpn=fpn, head=satlaspretrain_models.utils.Head.CLASSIFY,num_categories=2)
+    model = weights_manager.get_pretrained_model(model_identifier=model_identifier, fpn=fpn, head=satlaspretrain_models.utils.Head.CLASSIFY,num_categories=2, device="cpu")
     model.to(device)
 
     if load_model_path is not None:
@@ -158,38 +160,95 @@ def train(model, optimizer, num_epochs, model_name="model"):
             torch.save(model.state_dict(), "trained_models/" + model_name + "_best.pth")
 
     torch.save(model.state_dict(), "trained_models/" + model_name + "_last.pth")
+    return {"Model": model_name, "Best Accuracy": best_accuracy, "F1-score": F1_score}
+
+
+def run_experiments():
+
+    # Define the parameter combinations
+    experiments = [
+        {"model_id": "Sentinel2_SwinB_SI_RGB", "fpn": True, "train_backbone": True, "train_fpn": True, "Name" : "SwinBase - Full Training"},
+        {"model_id": "Sentinel2_SwinB_SI_RGB", "fpn": True, "train_backbone": False, "train_fpn": True, "Name" : "Frozen SwinB - Finetune FPN"},
+        {"model_id": "Sentinel2_SwinB_SI_RGB", "fpn": False, "train_backbone": True, "train_fpn": False, "Name" : "Finetune SwinB - No FPN"},
+        {"model_id": "Sentinel2_SwinB_SI_RGB", "fpn": False, "train_backbone": False, "train_fpn": False, "Name" : "Frozen SwinB - No FPN"},
+        {"model_id": "Sentinel2_SwinT_SI_RGB", "fpn": True, "train_backbone": True, "train_fpn": True, "Name" : "SwinTiny - Full Training"},
+        {"model_id": "Sentinel2_SwinT_SI_RGB", "fpn": True, "train_backbone": False, "train_fpn": True, "Name" : "Frozen SwinT - Finetune FPN"},
+        {"model_id": "Sentinel2_SwinT_SI_RGB", "fpn": False, "train_backbone": True, "train_fpn": False, "Name" : "Finetune SwinT - No FPN"},
+        {"model_id": "Sentinel2_SwinT_SI_RGB", "fpn": False, "train_backbone": False, "train_fpn": False, "Name" : "Frozen SwinT - No FPN"},
+        {"model_id": "Sentinel2_Resnet50_SI_RGB", "fpn": True, "train_backbone": True, "train_fpn": True, "Name" : "ResNet50 - Full Training"},
+        {"model_id": "Sentinel2_Resnet50_SI_RGB", "fpn": True, "train_backbone": False, "train_fpn": True, "Name" : "Frozen RN50 - Finetune FPN"},
+        {"model_id": "Sentinel2_Resnet50_SI_RGB", "fpn": False, "train_backbone": True, "train_fpn": False, "Name" : "Finetune RN50 - No FPN"},
+        {"model_id": "Sentinel2_Resnet50_SI_RGB", "fpn": False, "train_backbone": False, "train_fpn": False, "Name" : "Frozen RN50 - No FPN"},
+    ]
+    results = []
+
+    # Run the script with different parameter combinations
+    for exp in experiments:
+        model, optimizer = load_model(
+        model_identifier=exp["model_id"],
+        fpn=exp["fpn"],
+        train_backbone=exp["train_backbone"],
+        train_fpn=exp["train_fpn"],
+        load_model_path=None,
+        lr=1e-05,
+        weight_decay=1e-05,
+        device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+        res = train(model, optimizer, 50, exp["Name"])
+        res["model_id"] = exp["model_id"]
+        res["fpn"] = exp["fpn"]
+        res["train_backbone"] = exp["train_backbone"]
+        res["train_fpn"] = exp["train_fpn"]
+        results.append(res)
+
+    # Summarize the results
+    os.makedirs("results", exist_ok=True)
+    df = pd.DataFrame(results)
+    df.to_csv("results/run_n1.csv", index=False)
+
         
 if __name__ == "__main__":
-    from argparse import ArgumentParser
-    parser = ArgumentParser()
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16)
 
-    parser.add_argument("--model_id", type=str, default="Sentinel2_SwinB_SI_RGB", help="Model identifier")
-    parser.add_argument("--fpn", action="store_true", help="Use FPN")
-    parser.add_argument("--train_backbone", action="store_true", help="Train backbone")
-    parser.add_argument("--train_fpn", action="store_true", help="Train FPN")
-    parser.add_argument("--load_model", type=str, default=None, help="Load model path")
+    # ~~~~~~~~~~~~ RUN FOR COMPARATIVE TRAININGS AND EVALS ~~~~~~~~~~~~~~~~~
 
-    parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-5, help="L2 weight decay")
-    parser.add_argument("--model_name", type=str, default="model", help="Model name")
+    run_experiments()
 
-    args = parser.parse_args()
+    # ~~~~~~~~~~~~ RUN BELOW FOR SINGLE RUN WITH ARGUMENTS ~~~~~~~~~~~~~~~~~
 
-    model, optimizer = load_model(
-        model_identifier=args.model_id,
-        fpn=args.fpn,
-        train_backbone=args.train_backbone,
-        train_fpn=args.train_fpn,
-        load_model_path=args.load_model,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    )
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
+    # from argparse import ArgumentParser
+    # parser = ArgumentParser()
 
-    train(model, optimizer, args.num_epochs, args.model_name)
+    # parser.add_argument("--model_id", type=str, default="Sentinel2_SwinB_SI_RGB", help="Model identifier")
+    # parser.add_argument("--fpn", action="store_true", help="Use FPN")
+    # parser.add_argument("--train_backbone", action="store_true", help="Train backbone")
+    # parser.add_argument("--train_fpn", action="store_true", help="Train FPN")
+    # parser.add_argument("--load_model", type=str, default=None, help="Load model path")
+
+    # parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs")
+    # parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
+    # parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
+    # parser.add_argument("--weight_decay", type=float, default=1e-5, help="L2 weight decay")
+    # parser.add_argument("--model_name", type=str, default="model", help="Model name")
+
+    # args = parser.parse_args()
+
+    # model, optimizer = load_model(
+    #     model_identifier=args.model_id,
+    #     fpn=args.fpn,
+    #     train_backbone=args.train_backbone,
+    #     train_fpn=args.train_fpn,
+    #     load_model_path=args.load_model,
+    #     lr=args.lr,
+    #     weight_decay=args.weight_decay,
+    #     device="cuda" if torch.cuda.is_available() else "cpu"
+    # )
+
+    # train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    # val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
+
+    # train(model, optimizer, args.num_epochs, args.model_name)
 
